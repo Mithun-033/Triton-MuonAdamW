@@ -2,58 +2,62 @@ import torch
 import torch.nn as nn
 import triton
 import triton.language as tl
+import math
 
 
 @triton.jit
-def ns_kernel_1(a_ptr,
-        out_ptr,
-        M,
-        K,
-        stride_am,
-        stride_ak,
-        stride_cm,
-        stride_cn,
-        BLOCK_M : tl.constexpr,
-        BLOCK_K : tl.constexpr,
-        GROUP_M : tl.constexpr):
+def ns_kernel_1(
+    a_ptr,
+    out_ptr,
+    M,
+    K,
+    stride_am,
+    stride_ak,
+    stride_cm,
+    stride_cn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+):
     """
     Compute X @ X.transpose
     X.shape = (M,K)
     out.shape = (M,M)
     """
-    pid = tl.program_id(axis = 0)
+    pid = tl.program_id(axis=0)
     num_pid_n = tl.cdiv(M, BLOCK_M)
     num_pid_m = tl.cdiv(M, BLOCK_M)
-    num_pid_in_group = (GROUP_M * num_pid_n)
+    num_pid_in_group = GROUP_M * num_pid_n
 
     group_id = pid // num_pid_in_group
     first_pid_m = group_id * GROUP_M
     group_size_m = tl.minimum(num_pid_m - first_pid_m, GROUP_M)
 
-    pid_m = first_pid_m + pid % group_size_m 
+    pid_m = first_pid_m + pid % group_size_m
     pid_n = (pid % num_pid_in_group) // group_size_m
 
-    offset_m = pid_m * BLOCK_M + tl.arange(0,BLOCK_M)
-    offset_n = pid_n * BLOCK_M + tl.arange(0,BLOCK_M)
-    offset_k = tl.arange(0,BLOCK_K)
+    offset_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offset_n = pid_n * BLOCK_M + tl.arange(0, BLOCK_M)
+    offset_k = tl.arange(0, BLOCK_K)
 
-    a_ptrs = a_ptr + offset_m[:,None] * stride_am + offset_k[None,:] * stride_ak
-    b_ptrs = a_ptr + offset_k[:,None] * stride_ak + offset_n[None,:] * stride_am
-    acc = tl.zeros((BLOCK_M,BLOCK_M), dtype = tl.float32)
+    a_ptrs = a_ptr + offset_m[:, None] * stride_am + offset_k[None, :] * stride_ak
+    b_ptrs = a_ptr + offset_k[:, None] * stride_ak + offset_n[None, :] * stride_am
+    acc = tl.zeros((BLOCK_M, BLOCK_M), dtype=tl.float32)
 
-    for k in range(0,K,BLOCK_K):
+    for k in range(0, K, BLOCK_K):
         k_mask = offset_k + k < K
 
-        a = tl.load(a_ptrs, mask = (offset_m[:,None] < M) & (k_mask[None,:]), other = 0.0)
-        b = tl.load(b_ptrs, mask = (k_mask[:,None]) & (offset_n[None,:] < M), other = 0.0)
-        acc = tl.dot(a,b,acc)
+        a = tl.load(a_ptrs, mask=(offset_m[:, None] < M) & (k_mask[None, :]), other=0.0)
+        b = tl.load(b_ptrs, mask=(k_mask[:, None]) & (offset_n[None, :] < M), other=0.0)
+        acc = tl.dot(a, b, acc)
 
         a_ptrs += BLOCK_K * stride_ak
         b_ptrs += BLOCK_K * stride_ak
 
-    out_ptrs = out_ptr + offset_m[:,None] * stride_cm + offset_n[None,:] * stride_cn
-    mask = (offset_m[:,None] < M) & (offset_n[None,:] < M)
-    tl.store(out_ptrs, acc, mask = mask)
+    out_ptrs = out_ptr + offset_m[:, None] * stride_cm + offset_n[None, :] * stride_cn
+    mask = (offset_m[:, None] < M) & (offset_n[None, :] < M)
+    tl.store(out_ptrs, acc, mask=mask)
+
 
 def solve_ns_kernel_1(matrix: torch.Tensor, out: torch.Tensor):
     if matrix.ndim != 2:
@@ -64,7 +68,7 @@ def solve_ns_kernel_1(matrix: torch.Tensor, out: torch.Tensor):
     BLOCK_K = 32
     GROUP_M = 8
 
-    grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(M, BLOCK_M))
+    grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(M, BLOCK_M),)
     ns_kernel_1[grid](
         a_ptr=matrix,
         out_ptr=out,
@@ -76,117 +80,126 @@ def solve_ns_kernel_1(matrix: torch.Tensor, out: torch.Tensor):
         stride_cn=out.stride(1),
         BLOCK_M=BLOCK_M,
         BLOCK_K=BLOCK_K,
-        GROUP_M = GROUP_M
+        GROUP_M=GROUP_M,
     )
 
+
 @triton.jit
-def ns_kernel_2(a_ptr,
-        out_ptr,
-        b_coeff,
-        c_coeff,
-        M,
-        stride_am,
-        stride_ak,
-        stride_cm,
-        stride_cn,
-        BLOCK_M : tl.constexpr,
-        BLOCK_K : tl.constexpr,
-        GROUP_M : tl.constexpr ):
-    '''
+def ns_kernel_2(
+    a_ptr,
+    out_ptr,
+    b_coeff,
+    c_coeff,
+    M,
+    stride_am,
+    stride_ak,
+    stride_cm,
+    stride_cn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+):
+    """
     A = X @ X.Transpose
     A = (M,M)
     out = bA + c(A @ A.Transpose)
     out = (M,M)
-    '''
-    pid = tl.program_id(axis = 0)
+    """
+    pid = tl.program_id(axis=0)
     num_pid_n = tl.cdiv(M, BLOCK_M)
     num_pid_m = tl.cdiv(M, BLOCK_M)
-    num_pid_in_group = (GROUP_M * num_pid_n)
+    num_pid_in_group = GROUP_M * num_pid_n
 
     group_id = pid // num_pid_in_group
     first_pid_m = group_id * GROUP_M
     group_size_m = tl.minimum(num_pid_m - first_pid_m, GROUP_M)
 
-    pid_m = first_pid_m + pid % group_size_m 
+    pid_m = first_pid_m + pid % group_size_m
     pid_n = (pid % num_pid_in_group) // group_size_m
 
-    offset_m = BLOCK_M * pid_m + tl.arange(0,BLOCK_M)
-    offset_n = BLOCK_M * pid_n + tl.arange(0,BLOCK_M)
-    offset_k = tl.arange(0,BLOCK_K)
+    offset_m = BLOCK_M * pid_m + tl.arange(0, BLOCK_M)
+    offset_n = BLOCK_M * pid_n + tl.arange(0, BLOCK_M)
+    offset_k = tl.arange(0, BLOCK_K)
 
-    a_ptrs = a_ptr + offset_m[:,None] * stride_am + offset_k[None,:] * stride_ak
-    at_ptrs = a_ptr + offset_k[:,None] * stride_ak + offset_n[None,:] * stride_am
+    a_ptrs = a_ptr + offset_m[:, None] * stride_am + offset_k[None, :] * stride_ak
+    at_ptrs = a_ptr + offset_k[:, None] * stride_ak + offset_n[None, :] * stride_am
 
-    acc = tl.zeros((BLOCK_M, BLOCK_M), dtype = tl.float32)
+    acc = tl.zeros((BLOCK_M, BLOCK_M), dtype=tl.float32)
 
-    for k in range(0,M,BLOCK_K):
+    for k in range(0, M, BLOCK_K):
         mask_k = k + offset_k < M
-        a = tl.load(a_ptrs, mask = (offset_m[:,None] < M) & mask_k[None,:], other = 0.0)
-        at = tl.load(at_ptrs, mask = (mask_k[:,None]) & (offset_n[None,:] < M), other = 0.0)
+        a = tl.load(a_ptrs, mask=(offset_m[:, None] < M) & mask_k[None, :], other=0.0)
+        at = tl.load(
+            at_ptrs, mask=(mask_k[:, None]) & (offset_n[None, :] < M), other=0.0
+        )
 
-        acc = tl.dot(a,at,acc)
+        acc = tl.dot(a, at, acc)
 
         a_ptrs += BLOCK_K * stride_ak
         at_ptrs += BLOCK_K * stride_ak
 
-    A_ptrs = a_ptr+offset_m[:,None]*stride_am+offset_n[None,:]*stride_ak
-    A = tl.load(A_ptrs, mask = (offset_m[:,None] < M) & (offset_k[None,:] < M), other = 0.0)
+    A_ptrs = a_ptr + offset_m[:, None] * stride_am + offset_n[None, :] * stride_ak
+    A = tl.load(A_ptrs, mask=(offset_m[:, None] < M) & (offset_n[None, :] < M), other=0.0)
     out = b_coeff * A + c_coeff * acc
 
-    out_ptrs = out_ptr + offset_m[:,None] * stride_cm + offset_n[None,:] * stride_cn
-    out_mask = (offset_m[:,None] < M) & (offset_n[None,:] < M)
+    out_ptrs = out_ptr + offset_m[:, None] * stride_cm + offset_n[None, :] * stride_cn
+    out_mask = (offset_m[:, None] < M) & (offset_n[None, :] < M)
 
-    tl.store(out_ptrs, out, mask = out_mask)
+    tl.store(out_ptrs, out, mask=out_mask)
 
-def solve_ns_kernel_2(matrix : torch.Tensor, b : float, c:float, out : torch.Tensor):
+
+def solve_ns_kernel_2(matrix: torch.Tensor, b: float, c: float, out: torch.Tensor):
     M = matrix.shape[0]
 
     BLOCK_M = 64
     BLOCK_K = 32
     GROUP_M = 8
 
-    grid = (triton.cdiv(M,BLOCK_M) * triton.cdiv(M,BLOCK_M))
+    grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(M, BLOCK_M),)
     ns_kernel_2[grid](
-        a_ptr = matrix,
-        out_ptr = out,
-        b_coeff = b,
-        c_coeff = c,
-        M = M,
-        stride_am = matrix.stride(0),
-        stride_ak = matrix.stride(1),
-        stride_cm = out.stride(0),
-        stride_cn = out.stride(1),
-        BLOCK_M = BLOCK_M ,
-        BLOCK_K = BLOCK_K,
-        GROUP_M = GROUP_M
+        a_ptr=matrix,
+        out_ptr=out,
+        b_coeff=b,
+        c_coeff=c,
+        M=M,
+        stride_am=matrix.stride(0),
+        stride_ak=matrix.stride(1),
+        stride_cm=out.stride(0),
+        stride_cn=out.stride(1),
+        BLOCK_M=BLOCK_M,
+        BLOCK_K=BLOCK_K,
+        GROUP_M=GROUP_M,
     )
 
+
 @triton.jit
-def ns_kernel_3(a_ptr, 
-        b_ptr,
-        out_ptr,
-        a_coeff,
-        M,
-        N,
-        stride_am,
-        stride_ak,
-        stride_bk,
-        stride_bn,
-        stride_cm ,
-        stride_cn ,
-        BLOCK_M : tl.constexpr ,
-        BLOCK_N : tl.constexpr,
-        BLOCK_K : tl.constexpr,
-        GROUP_M : tl.constexpr):
-    '''
+def ns_kernel_3(
+    a_ptr,
+    b_ptr,
+    out_ptr,
+    a_coeff,
+    M,
+    N,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+):
+    """
     X = (M,N)
     Compute out = aX + out_2 @ X where,
     out_2 = bA + cA @ A.T, A = X @ X.T, out_2 = (M,M)
     out = (M,N)
-    '''
-    pid = tl.program_id(axis = 0)
-    num_pid_m = tl.cdiv(M,BLOCK_M)
-    num_pid_n = tl.cdiv(N,BLOCK_N)
+    """
+    pid = tl.program_id(axis=0)
+    num_pid_m = tl.cdiv(M, BLOCK_M)
+    num_pid_n = tl.cdiv(N, BLOCK_N)
     num_pid_in_group = GROUP_M * num_pid_n
 
     group_id = pid // num_pid_in_group
@@ -196,43 +209,46 @@ def ns_kernel_3(a_ptr,
     pid_m = first_pid_m + pid % group_size_m
     pid_n = (pid % num_pid_in_group) // group_size_m
 
-    offset_m = pid_m * BLOCK_M + tl.arange(0,BLOCK_M)
-    offset_n = pid_n * BLOCK_N + tl.arange(0,BLOCK_N)
-    offset_k = tl.arange(0,BLOCK_K)
+    offset_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offset_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offset_k = tl.arange(0, BLOCK_K)
 
-    a_ptrs = a_ptr + offset_m[:,None] * stride_am + offset_k[None,:] * stride_ak
-    b_ptrs = b_ptr + offset_k[:,None] * stride_bk + offset_n[None,:] * stride_bn
+    a_ptrs = a_ptr + offset_m[:, None] * stride_am + offset_k[None, :] * stride_ak
+    b_ptrs = b_ptr + offset_k[:, None] * stride_bk + offset_n[None, :] * stride_bn
 
-    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype = tl.float32)
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
-    for k in range(0,M,BLOCK_K):
+    for k in range(0, M, BLOCK_K):
         mask_k = offset_k + k < M
 
-        a = tl.load(a_ptrs, mask = (offset_m[:,None] < M) & (mask_k[None,:]), other = 0.0)
-        b = tl.load(b_ptrs, mask = (mask_k[:,None]) & (offset_n[None,:] < N), other = 0.0)
-        acc = tl.dot(a,b,acc)
+        a = tl.load(a_ptrs, mask=(offset_m[:, None] < M) & (mask_k[None, :]), other=0.0)
+        b = tl.load(b_ptrs, mask=(mask_k[:, None]) & (offset_n[None, :] < N), other=0.0)
+        acc = tl.dot(a, b, acc)
 
         a_ptrs += BLOCK_K * stride_ak
         b_ptrs += BLOCK_K * stride_bk
 
-    x_ptrs = a_ptr + offset_m[:,None] * stride_am + offset_n[None,:] * stride_ak
-    mask_x = (offset_m[:,None] < M) & (offset_n[None,:] < N)
-    X = tl.load(x_ptrs, mask = mask_x, other = 0.0)
+    x_ptrs = b_ptr + offset_m[:, None] * stride_bk + offset_n[None, :] * stride_bn
+    mask_x = (offset_m[:, None] < M) & (offset_n[None, :] < N)
+    X = tl.load(x_ptrs, mask=mask_x, other=0.0)
 
-    out = a_coeff * X + acc 
-    out_ptrs = out_ptr + offset_m[:,None] * stride_cm + offset_n[None,:] * stride_cn
+    out = a_coeff * X + acc
+    out_ptrs = out_ptr + offset_m[:, None] * stride_cm + offset_n[None, :] * stride_cn
 
-    tl.store(out_ptrs, out, mask = mask_x)
+    tl.store(out_ptrs, out, mask=mask_x)
 
-def solve_ns_kernel_3(X : torch.Tensor, out_2 : torch.Tensor, a : float, out : torch.Tensor):
-    M,N = X.shape
+
+def solve_ns_kernel_3(
+    X: torch.Tensor, out_2: torch.Tensor, a: float, out: torch.Tensor
+):
+    M, N = X.shape
 
     BLOCK_M = 64
     BLOCK_K = 32
     BLOCK_N = 64
     GROUP_M = 8
 
-    grid = ((triton.cdiv(M,BLOCK_M)) * triton.cdiv(N,BLOCK_N))
+    grid = ((triton.cdiv(M, BLOCK_M)) * triton.cdiv(N, BLOCK_N),)
 
     ns_kernel_3[grid](
         a_ptr=out_2,
@@ -250,36 +266,108 @@ def solve_ns_kernel_3(X : torch.Tensor, out_2 : torch.Tensor, a : float, out : t
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
         BLOCK_K=BLOCK_K,
-        GROUP_M=GROUP_M
-)
+        GROUP_M=GROUP_M,
+    )
 
-def newton_shultz_step(X : torch.Tensor, a : float, b : float, c : float, out : torch.Tensor):
-    M,_ = X.shape
-    A = torch.empty((M,M), device=X.device, dtype=X.dtype)
-    out_2 = torch.empty((M,M), device=X.device, dtype=X.dtype)
+
+def newton_shultz_step(
+    X: torch.Tensor, a: float, b: float, c: float, out: torch.Tensor
+):
+    M, _ = X.shape
+    A = torch.empty((M, M), device=X.device, dtype=X.dtype)
+    out_2 = torch.empty((M, M), device=X.device, dtype=X.dtype)
 
     solve_ns_kernel_1(X, A)
     solve_ns_kernel_2(A, b, c, out_2)
     solve_ns_kernel_3(X, out_2, a, out)
 
-def muon_step(grad : torch.Tensor, momentum : torch.Tensor, a : float, b : float, c : float, lr : float, weight_decay : float, eps : float, out : torch.Tensor):
-    ...
+def muon_step(
+    weights: torch.Tensor,
+    grad: torch.Tensor,
+    momentum: torch.Tensor,
+    beta: float,
+    a: float,
+    b: float,
+    c: float,
+    lr: float,
+    weight_decay: float,
+    steps: int,
+    eps: float,
+    out: torch.Tensor,
+):
+    momentum.mul_(beta).add_(grad, alpha=1 - beta)
+    momentum_nesterov = grad + beta * (momentum - grad)  # grad.lerp(momentum, beta)
 
-class Muon():
-    def __init__(self, model : nn.Module, coeffs : tuple[float,float,float], beta : float, lr : float, weight_decay : float, eps : float):
+    X = momentum_nesterov.bfloat16()
+    transposed = X.shape[0] > X.shape[1]
+    if transposed:
+        X = X.T.contiguous()
+
+    X = X / X.norm().clamp(min=eps)
+
+    ns_out = torch.empty_like(X)
+    ns_buf = torch.empty_like(X)
+    newton_shultz_step(X, a, b, c, ns_out)
+    for _ in range(steps - 1):
+        newton_shultz_step(ns_out, a, b, c, ns_buf)
+        ns_out, ns_buf = ns_buf, ns_out
+
+    if transposed:
+        ns_out = ns_out.T
+
+    out.copy_(ns_out)
+
+    weights.sub_(lr * weight_decay * weights)
+
+    scaled_lr = lr * math.sqrt(max(1, weights.shape[0] / weights.shape[1]))
+    weights.sub_(scaled_lr * out)
+
+
+class TritonMuon:
+    def __init__(
+        self,
+        model: nn.Module,
+        coeffs: tuple[float, float, float],
+        beta: float,
+        lr: float,
+        weight_decay: float,
+        steps: int,
+        eps: float = 1e-7,
+    ):
         self.model = model
         self.a = coeffs[0]
         self.b = coeffs[1]
         self.c = coeffs[2]
+        self.beta = beta
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.steps = steps
+        self.eps = eps
 
         self.momentum = {}
 
         for param in self.model.parameters():
-            self.momentum[param] = torch.zeros_like(param, device=param.device, dtype=param.dtype)
+            self.momentum[param] = torch.zeros_like(
+                param, device=param.device, dtype=param.dtype
+            )
 
     def step(self):
-        ...        
-
-
-
-
+        for param in self.model.parameters():
+            if param.grad is None:
+                continue
+            out = torch.empty_like(param)
+            muon_step(
+                weights=param.data,
+                grad=param.grad,
+                momentum=self.momentum[param],
+                beta=self.beta,
+                a=self.a,
+                b=self.b,
+                c=self.c,
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+                steps=self.steps,
+                eps=self.eps,
+                out=out,
+            )
+        
