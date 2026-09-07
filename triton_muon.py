@@ -20,9 +20,7 @@ def ns_kernel_1(
     GROUP_M: tl.constexpr,
 ):
     """
-    Compute X @ X.transpose
-    X.shape = (M,K)
-    out.shape = (M,M)
+    Compute X @ X.transpose (symmetric, upper triangle skipped + mirrored)
     """
     pid = tl.program_id(axis=0)
     num_pid_n = tl.cdiv(M, BLOCK_M)
@@ -35,6 +33,9 @@ def ns_kernel_1(
 
     pid_m = first_pid_m + pid % group_size_m
     pid_n = (pid % num_pid_in_group) // group_size_m
+
+    if pid_n > pid_m:
+        return
 
     offset_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offset_n = pid_n * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -58,6 +59,11 @@ def ns_kernel_1(
     mask = (offset_m[:, None] < M) & (offset_n[None, :] < M)
     tl.store(out_ptrs, acc, mask=mask)
 
+    if pid_m != pid_n:
+        acc_t = tl.trans(acc)
+        out_ptrs_t = out_ptr + offset_n[:, None] * stride_cm + offset_m[None, :] * stride_cn
+        mask_t = (offset_n[:, None] < M) & (offset_m[None, :] < M)
+        tl.store(out_ptrs_t, acc_t, mask=mask_t)
 
 def solve_ns_kernel_1(matrix: torch.Tensor, out: torch.Tensor):
     if matrix.ndim != 2:
@@ -83,7 +89,6 @@ def solve_ns_kernel_1(matrix: torch.Tensor, out: torch.Tensor):
         GROUP_M=GROUP_M,
     )
 
-
 @triton.jit
 def ns_kernel_2(
     a_ptr,
@@ -102,7 +107,7 @@ def ns_kernel_2(
     """
     A = X @ X.Transpose
     A = (M,M)
-    out = bA + c(A @ A.Transpose)
+    out = bA + c(A @ A.Transpose)  (symmetric, upper triangle skipped + mirrored)
     out = (M,M)
     """
     pid = tl.program_id(axis=0)
@@ -116,6 +121,9 @@ def ns_kernel_2(
 
     pid_m = first_pid_m + pid % group_size_m
     pid_n = (pid % num_pid_in_group) // group_size_m
+
+    if pid_n > pid_m:
+        return
 
     offset_m = BLOCK_M * pid_m + tl.arange(0, BLOCK_M)
     offset_n = BLOCK_M * pid_n + tl.arange(0, BLOCK_M)
@@ -144,8 +152,13 @@ def ns_kernel_2(
 
     out_ptrs = out_ptr + offset_m[:, None] * stride_cm + offset_n[None, :] * stride_cn
     out_mask = (offset_m[:, None] < M) & (offset_n[None, :] < M)
-
     tl.store(out_ptrs, out, mask=out_mask)
+
+    if pid_m != pid_n:
+        out_t = tl.trans(out)
+        out_ptrs_t = out_ptr + offset_n[:, None] * stride_cm + offset_m[None, :] * stride_cn
+        mask_t = (offset_n[:, None] < M) & (offset_m[None, :] < M)
+        tl.store(out_ptrs_t, out_t, mask=mask_t)
 
 
 def solve_ns_kernel_2(matrix: torch.Tensor, b: float, c: float, out: torch.Tensor):
