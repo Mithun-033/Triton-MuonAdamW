@@ -105,6 +105,8 @@ for (n1, p1), (n2, p2) in zip(model_triton.named_parameters(), model_pytorch.nam
     all_close &= check_close(n1, p1, p2, atol=1e-2, rtol=1e-2)
 print(f"All parameters match: {'OK' if all_close else 'FAIL'}")
 
+num_params = sum(p.numel() for p in model_triton.parameters())
+
 print(f"Parameters:       {num_params:,}")
 print()
 print(f"Triton Muon:")
