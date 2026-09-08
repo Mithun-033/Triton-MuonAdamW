@@ -30,7 +30,7 @@ Y = torch.randn(1000, 1024).to("cuda")
 model_triton = model
 model_pytorch = copy.deepcopy(model)
 
-triton_optimizer = TritonAdamW(model_triton, beta1=0.9, beta2=0.999, lr=1e-3, weight_decay=1e-4, eps=1e-8)
+triton_optimizer = TritonAdamW(model_triton.parameters(), betas = (0.9, 0.999), lr=1e-3, weight_decay=1e-4, eps=1e-8)
 
 pytorch_optimizer = torch.optim.AdamW(
     model_pytorch.parameters(),

@@ -2,16 +2,11 @@ import triton
 import triton.language as tl
 
 import torch
+import torch.nn as nn
 
-@triton.autotune(
-    configs=[
-        triton.Config({'BLOCK_SIZE': 1024}, num_warps=2),
-        triton.Config({'BLOCK_SIZE': 512}, num_warps=2),
-        triton.Config({'BLOCK_SIZE': 256}, num_warps=2),
-        triton.Config({'BLOCK_SIZE': 128}, num_warps=2),
-    ],
-    key=["N"],
-)
+from collections.abc import Iterable
+
+
 @triton.jit
 def adamw_step(
     p_ptr,
@@ -21,13 +16,16 @@ def adamw_step(
     N: int,
     BLOCK_SIZE: tl.constexpr,
     lr: float,
-    weight_decay: tl.constexpr,
-    bias1 ,
-    bias2,
-    beta1: tl.constexpr = 0.9,
-    beta2: tl.constexpr = 0.99,
-    eps: tl.constexpr = 1e-8,
+    weight_decay: float,
+    bias1: float,
+    bias2: float,
+    beta1: float,
+    beta2: float,
+    eps: float,
 ):
+    '''
+    Loads first & second moment, grad and params chunk and updates them with decoupled weight decay
+    '''
     pid_m = tl.program_id(axis=0)
     pid_n = tl.program_id(axis=1)
     cols = tl.arange(0, BLOCK_SIZE)
@@ -55,35 +53,60 @@ def adamw_step(
 
 
 def solve_adamw_step(
-    matrix: torch.tensor,
-    gradient: torch.tensor,
+    matrix: torch.Tensor,
+    gradient: torch.Tensor,
     m: torch.Tensor,
-    v: torch.tensor,
-    lr : float,
+    v: torch.Tensor,
+    lr: float,
     bias1,
     bias2,
     beta1: float,
     beta2: float,
     weight_decay,
-    eps : float
+    eps: float,
 ):
-    if matrix.ndim==1:
-        matrix=matrix.unsqueeze(0)
-        gradient=gradient.unsqueeze(0)
-        m=m.unsqueeze(0)
-        v=v.unsqueeze(0)
+    if matrix.ndim == 1:
+        matrix = matrix.unsqueeze(0)
+        gradient = gradient.unsqueeze(0)
+        m = m.unsqueeze(0)
+        v = v.unsqueeze(0)
 
     M, N = matrix.shape
-    grid=lambda meta:(M,triton.cdiv(N,meta['BLOCK_SIZE']))
+    BLOCK_SIZE = 256
+    grid = (M, triton.cdiv(N, BLOCK_SIZE))
 
-    adamw_step[grid](matrix, gradient, m, v, N=N, lr=lr, weight_decay=weight_decay, bias1=bias1, bias2=bias2, beta1=beta1, beta2=beta2, eps=eps)
+    adamw_step[grid](
+        matrix,
+        gradient,
+        m,
+        v,
+        N=N,
+        BLOCK_SIZE=BLOCK_SIZE,
+        lr=lr,
+        weight_decay=weight_decay,
+        bias1=bias1,
+        bias2=bias2,
+        beta1=beta1,
+        beta2=beta2,
+        eps=eps,
+    )
 
 
 class TritonAdamW:
-    def __init__(self, model, beta1, beta2, lr, weight_decay, eps):
-        self.model = model
-        self.beta1 = beta1
-        self.beta2 = beta2
+    def __init__(
+        self,
+        params: Iterable[nn.Parameter] | list[nn.Parameter],
+        lr=1e-3,
+        betas: tuple[float, float] = (0.9, 0.999),
+        weight_decay=1e-2,
+        eps=1e-7,
+    ):
+        '''
+        Triton Implementation of AdamW
+        '''
+        self.model_params = list(params)
+        self.beta1 = betas[0]
+        self.beta2 = betas[1]
         self.lr = lr
         self.weight_decay = weight_decay
         self.eps = eps
@@ -91,14 +114,17 @@ class TritonAdamW:
         self.m = {}
         self.v = {}
 
-        for param in self.model.parameters():
-            self.m[param] = torch.zeros_like(param, dtype = torch.float32)
-            self.v[param] = torch.zeros_like(param, dtype = torch.float32)
+        for param in self.model_params:
+            self.m[param] = torch.zeros_like(param, dtype=torch.float32)
+            self.v[param] = torch.zeros_like(param, dtype=torch.float32)
 
     @torch.no_grad()
     def step(self):
+        '''
+        Performs one iteration of AdamW optimizer step
+        '''
         self.step_num += 1
-        for param in self.model.parameters():
+        for param in self.model_params:
             if param.grad is None:
                 continue
             solve_adamw_step(
@@ -107,16 +133,18 @@ class TritonAdamW:
                 self.m[param],
                 self.v[param],
                 self.lr,
-                1 - self.beta1 ** self.step_num,
-                1 - self.beta2 ** self.step_num,
+                1 - self.beta1**self.step_num,
+                1 - self.beta2**self.step_num,
                 self.beta1,
                 self.beta2,
                 self.weight_decay,
-                self.eps
+                self.eps,
             )
 
     def zero_grad(self):
-        for param in self.model.parameters():
+        '''
+        Resets gradients back to zero.
+        '''
+        for param in self.model_params:
             if param.grad is not None:
                 param.grad.zero_()
-

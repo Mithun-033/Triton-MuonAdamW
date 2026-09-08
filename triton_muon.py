@@ -1,8 +1,11 @@
+import math
+from collections.abc import Iterable
+from typing import Literal
+
 import torch
 import torch.nn as nn
 import triton
 import triton.language as tl
-import math
 
 
 @triton.jit
@@ -93,8 +96,8 @@ def solve_ns_kernel_1(matrix: torch.Tensor, out: torch.Tensor):
 def ns_kernel_2(
     a_ptr,
     out_ptr,
-    b_coeff,
-    c_coeff,
+    b_coeff : tl.constexpr,
+    c_coeff : tl.constexpr,
     M,
     stride_am,
     stride_ak,
@@ -190,7 +193,7 @@ def ns_kernel_3(
     a_ptr,
     b_ptr,
     out_ptr,
-    a_coeff,
+    a_coeff : tl.constexpr,
     M,
     N,
     stride_am,
@@ -286,6 +289,9 @@ def solve_ns_kernel_3(
 def newton_shultz_step(
     X: torch.Tensor, a: float, b: float, c: float, out: torch.Tensor
 ):
+    '''
+    Combines all three kernels to compute the Newton-Schultz step in one function.
+    '''
     M, _ = X.shape
     A = torch.empty((M, M), device=X.device, dtype=X.dtype)
     out_2 = torch.empty((M, M), device=X.device, dtype=X.dtype)
@@ -303,15 +309,22 @@ def muon_step(
     b: float,
     c: float,
     lr: float,
+    scaled_lr : float,
     weight_decay: float,
     steps: int,
     eps: float,
+    nesterov : bool,
     out: torch.Tensor,
 ):
+    '''
+    Performs one iteration of muon optimizer step
+    '''
     momentum.mul_(beta).add_(grad, alpha=1 - beta)
-    momentum_nesterov = grad + beta * (momentum - grad)  # grad.lerp(momentum, beta)
 
-    X = momentum_nesterov.bfloat16()
+    if nesterov:
+        momentum = grad + beta * (momentum - grad)  
+
+    X = momentum.bfloat16()
     transposed = X.shape[0] > X.shape[1]
     if transposed:
         X = X.T.contiguous()
@@ -332,43 +345,68 @@ def muon_step(
 
     weights.sub_(lr * weight_decay * weights)
 
-    scaled_lr = lr * math.sqrt(max(1, weights.shape[0] / weights.shape[1]))
+    
     weights.sub_(scaled_lr * out)
 
 
 class TritonMuon:
     def __init__(
         self,
-        model: nn.Module,
-        coeffs: tuple[float, float, float],
-        beta: float,
-        lr: float,
-        weight_decay: float,
-        steps: int,
+        params: Iterable[nn.Parameter] | list[nn.Parameter],
+        lr: float = 1e-3,
+        weight_decay: float = 0.1,
+        coeffs: tuple[float, float, float] = (3.445, -4.775, 2.0315),
+        nesterov : bool= True,
+        beta: float = 0.95,
+        ns_steps: int = 5,
         eps: float = 1e-7,
+        adjust_lr_fn : Literal["original", "match_rms_adamw", "spectral_unclamped"] = "original"
     ):
-        self.model = model
+        '''
+        Triton implementation of Muon optimizer.
+        '''
+
+        if adjust_lr_fn not in ["original", "match_rms_adamw", "spectral_unclamped"]:
+            raise AssertionError(f"Invalid adjust_lr_fn: {adjust_lr_fn}")
+        
+        self.model_params = list(params)
         self.a = coeffs[0]
         self.b = coeffs[1]
         self.c = coeffs[2]
+        self.is_nesterov = nesterov
         self.beta = beta
         self.lr = lr
+        self.adjust_lr_fn = adjust_lr_fn
         self.weight_decay = weight_decay
-        self.steps = steps
+        self.steps = ns_steps
         self.eps = eps
 
         self.momentum = {}
 
-        for param in self.model.parameters():
+        for param in self.model_params:
             self.momentum[param] = torch.zeros_like(
                 param, device=param.device, dtype=param.dtype
             )
 
+    @torch.no_grad()
     def step(self):
-        for param in self.model.parameters():
+        '''
+        Optimizer step for Muon optimizer.
+        '''
+        for param in self.model_params:
             if param.grad is None:
                 continue
             out = torch.empty_like(param)
+
+            if self.adjust_lr_fn == "original":
+                scaled_lr = self.lr * math.sqrt(max(1, param.shape[0] / param.shape[1]))
+
+            elif self.adjust_lr_fn == "match_rms_adamw":
+                scaled_lr = 0.2 * self.lr * math.sqrt(max(param.shape[0], max(param.shape[1])))
+
+            else:
+                scaled_lr = self.lr * math.sqrt(param.shape[0] / param.shape[1])
+
             muon_step(
                 weights=param.data,
                 grad=param.grad,
@@ -378,9 +416,20 @@ class TritonMuon:
                 b=self.b,
                 c=self.c,
                 lr=self.lr,
+                scaled_lr = scaled_lr,
                 weight_decay=self.weight_decay,
                 steps=self.steps,
                 eps=self.eps,
+                nesterov = self.is_nesterov,
                 out=out,
             )
+
+    def zero_grad(self):
+        '''
+        Resets gradients back to zero.
+        '''
+        for param in self.model_params:
+            if param.grad is not None:
+                param.grad.zero_()
+    
         

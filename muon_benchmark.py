@@ -29,7 +29,7 @@ Y = torch.randn(1000, 1024).to("cuda")
 model_triton = model
 model_pytorch = copy.deepcopy(model)
 
-triton_optimizer = TritonMuon(model_triton, coeffs=(3.4445, -4.775, 2.0315), beta=0.95, lr=1e-3, weight_decay=0.1, steps=5)
+triton_optimizer = TritonMuon(model_triton.parameters(), coeffs=(3.4445, -4.775, 2.0315), beta=0.95, lr=1e-3, weight_decay=0.1, ns_steps=5)
 pytorch_optimizer = torch.optim.Muon(model_pytorch.parameters(), lr = 0.001, momentum = 0.95, nesterov = True, ns_steps = 5)
 compiled_pytorch_step = torch.compile(pytorch_optimizer.step)
 
