@@ -1,10 +1,21 @@
-import triton
-import triton.language as tl
+"""
+Triton kernels for the elementwise AdamW parameter update.
 
-import torch
-import torch.nn as nn
+The ``adamw_step`` kernel treats each parameter as an ``M x N`` matrix and
+launches a 2D grid: one program selects a row and a second program selects a
+block of BLOCK_SIZE columns. Each program loads the parameter, gradient, first
+moment, and second moment for its tile, updates the values in registers, and
+writes the parameter and both moments back to global memory. A mask protects
+the final, partially filled column block.
+
+"""
 
 from collections.abc import Iterable
+
+import torch
+import torch.nn as nn  # noqa: PLR0402
+import triton
+import triton.language as tl
 
 
 @triton.jit
@@ -72,7 +83,7 @@ def solve_adamw_step(
         v = v.unsqueeze(0)
 
     M, N = matrix.shape
-    BLOCK_SIZE = 256
+    BLOCK_SIZE = 512
     grid = (M, triton.cdiv(N, BLOCK_SIZE))
 
     adamw_step[grid](

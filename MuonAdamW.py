@@ -1,9 +1,8 @@
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
 import torch
-import torch.nn as nn
+import torch.nn as nn  #noqa: PLR0402
 
 from triton_adam import TritonAdamW
 from triton_muon import TritonMuon

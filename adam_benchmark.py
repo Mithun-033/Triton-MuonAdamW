@@ -3,7 +3,7 @@ import copy
 
 import numpy as np
 import torch
-import torch.nn as nn
+import torch.nn as nn  # noqa: PLR0402
 
 from triton_adam import TritonAdamW
 
@@ -124,11 +124,11 @@ pytorch_gflops = total_flops / (pytorch_ms * 1e6)
 
 print(f"Parameters:       {num_params:,}")
 print()
-print(f"Triton AdamW:")
+print("Triton AdamW:")
 print(f"  Time:           {triton_ms:.4f} ms")
 print(f"  GFLOP/s:        {triton_gflops:.2f}")
 print()
-print(f"PyTorch AdamW:")
+print("PyTorch AdamW:")
 print(f"  Time:           {pytorch_ms:.4f} ms")
 print(f"  GFLOP/s:        {pytorch_gflops:.2f}")
 print()

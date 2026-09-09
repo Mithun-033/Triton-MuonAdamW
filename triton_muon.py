@@ -1,9 +1,33 @@
+"""
+Triton kernels are used for newton-shultz iterations.
+
+The update is split into three kernels so the intermediate matrix products can
+be tiled and reused across the transformation:
+
+1. ``ns_kernel_1`` computes the square Gram matrix
+    ``A = X @ X.T``. Each program owns a ``BLOCK_M x BLOCK_M`` tile and walks
+    the shared dimension in ``BLOCK_K`` chunks. Only the lower-triangular tiles
+    are calculated; off-diagonal tiles are copied to the opposite side with a
+    transpose because the result is symmetric.
+
+2. ``ns_kernel_2`` computes the next square transform. For each output tile it
+    calculates ``A @ A.T`` in the same tiled way, then combines it with the
+    corresponding tile of ``A``:
+    ``out_2 = b * A + c * (A @ A.T)``. It uses the same lower-triangle and
+    mirrored-write optimization as the first kernel.
+
+3. ``ns_kernel_3`` produces the rectangular result. It multiplies the square
+    matrix from kernel 2 by ``X`` and adds a scaled copy of ``X``:
+    ``out = a * X + out_2 @ X``. Because this result is not symmetric, every
+    ``BLOCK_M x BLOCK_N`` tile is computed once.
+"""
+
 import math
 from collections.abc import Iterable
 from typing import Literal
 
 import torch
-import torch.nn as nn
+import torch.nn as nn  # noqa: PLR0402
 import triton
 import triton.language as tl
 

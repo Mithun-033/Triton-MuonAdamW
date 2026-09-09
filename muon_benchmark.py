@@ -3,7 +3,7 @@ import copy
 
 import numpy as np
 import torch
-import torch.nn as nn
+import torch.nn as nn  # noqa: PLR0402
 
 from triton_muon import TritonMuon
 
@@ -109,10 +109,10 @@ num_params = sum(p.numel() for p in model_triton.parameters())
 
 print(f"Parameters:       {num_params:,}")
 print()
-print(f"Triton Muon:")
+print("Triton Muon:")
 print(f"  Time:           {triton_ms:.4f} ms")
 print()
-print(f"PyTorch Muon:")
+print("PyTorch Muon:")
 print(f"  Time:           {pytorch_ms:.4f} ms")
 print()
 print(f"Speedup:          {pytorch_ms / triton_ms:.2f}x")
