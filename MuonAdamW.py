@@ -4,8 +4,8 @@ from typing import Literal
 import torch
 import torch.nn as nn  #noqa: PLR0402
 
-from triton_adam import TritonAdamW
-from triton_muon import TritonMuon
+from adamw.triton_adam import TritonAdamW
+from muon.triton_muon import TritonMuon
 
 
 @dataclass
