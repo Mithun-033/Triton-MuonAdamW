@@ -1,11 +1,13 @@
-from triton_adam import TritonAdamW
-from triton_muon import TritonMuon
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Literal
 
 import torch
 import torch.nn as nn
-from dataclasses import dataclass
-from typing import Literal
-from collections.abc import Iterable
+
+from triton_adam import TritonAdamW
+from triton_muon import TritonMuon
+
 
 @dataclass
 class AdamConfig:
@@ -41,6 +43,13 @@ class MuonAdamW(TritonMuon, TritonAdamW):
     ):
         '''
         Initializes the MuonAdamW optimizer with the given model parameters and configurations for both Muon and AdamW optimizers.
+        Args:
+            model_params (nn.Module | dict[str, nn.Parameter]): The model parameters to optimize. Can be an nn.Module or a dictionary with keys 'adam' and 'muon'.
+            muon_config (MuonConfig): Configuration for the Muon optimizer.
+            adam_config (AdamConfig): Configuration for the AdamW optimizer.
+            parameter_split (Literal["auto", "explicit"]): Determines how to split parameters between Muon and AdamW optimizers. 
+                - "auto": Automatically splits parameters based on their dimensions (2D parameters go to Muon, others to AdamW).
+                - "explicit": Expects a dictionary with keys 'adam' and 'muon' containing the respective parameters.
         '''
         adam_params = []
         muon_params = []
