@@ -345,7 +345,6 @@ def muon_step(
 
     weights.sub_(lr * weight_decay * weights)
 
-    
     weights.sub_(scaled_lr * out)
 
 
