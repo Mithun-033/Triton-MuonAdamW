@@ -27,6 +27,11 @@ class MuonConfig:
     adjust_lr_fn : Literal["original", "match_rms_adamw", "spectral_unclamped"] = "original"
 
 class MuonAdamW(TritonMuon, TritonAdamW):
+    '''
+    MuonAdamW is a custom Triton based optimizer that combines the Muon and AdamW optimizers.
+    It uses Muon for 2D parameters (exept Embeddings) and AdamW for all other parameters (like biases, LayerNorm weights, etc.).
+    The optimizers are optimized for performance on GPU, with more focus on improving training speed..
+    '''
     def __init__(
         self,
         model_params: nn.Module | dict[str, nn.Parameter],
@@ -34,6 +39,9 @@ class MuonAdamW(TritonMuon, TritonAdamW):
         adam_config: AdamConfig = AdamConfig(),  # noqa: B008
         parameter_split : Literal["auto", "explicit"] = "auto"
     ):
+        '''
+        Initializes the MuonAdamW optimizer with the given model parameters and configurations for both Muon and AdamW optimizers.
+        '''
         adam_params = []
         muon_params = []
         if parameter_split == "explicit" and not isinstance(model_params, dict):
@@ -86,17 +94,29 @@ class MuonAdamW(TritonMuon, TritonAdamW):
         }
 
     def step(self):
+        '''
+        Performs a single optimization step for both AdamW and Muon optimizers.
+        '''
         self.adamw.step()
         self.muon.step()
 
     def zero_grad(self):
+        '''
+        Resets the gradients of all model parameters to zero for both AdamW and Muon optimizers.
+        '''
         self.adamw.zero_grad()
         self.muon.zero_grad()
 
     def state_dict(self):
+        '''
+        Returns the state of the optimizer as a dictionary.
+        '''
         return self.param_group 
 
     def load_state_dict(self, state_dict):
+        '''
+        Loads the optimizer state from a dictionary.
+    '''
         if "adam" in state_dict:
             self.adamw.model_params = state_dict["adam"]
         if "muon" in state_dict:
