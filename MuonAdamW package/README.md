@@ -55,16 +55,13 @@ The custom optimizers were numerically compared against their PyTorch counterpar
 
 ```text
 Triton MuonAdamW/
-├── MuonAdamW.py                 # Hybrid optimizer and PyTorch reference wrapper
-├── adamw/
-│   ├── triton_adam.py           # Triton AdamW kernel and optimizer
-│   └── adam_benchmark.py        # AdamW benchmark
-├── muon/
-│   ├── triton_muon.py           # Triton Muon kernels and optimizer
-│   └── muon_benchmark.py        # Muon benchmark
-├── muon_adamw_benchmark.py      # Hybrid benchmark
+├── triton_muon_adamw/
+│   ├── __init__.py              # Public package exports
+│   ├── optimizer.py             # Hybrid optimizer and reference wrapper
+│   ├── adamw/triton_adam.py     # Triton AdamW kernel and optimizer
+│   └── muon/triton_muon.py      # Triton Muon kernels and optimizer
+├── benchmarks/                  # Optional CUDA benchmark scripts
 ├── pyproject.toml               # Project metadata and dependencies
-├── uv.lock                      # Locked dependency versions
 └── README.md
 ```
 
@@ -73,8 +70,12 @@ Triton MuonAdamW/
 The project targets Python 3.13 or newer and requires a CUDA-capable PyTorch and Triton environment.
 
 ```bash
-uv sync
+python -m pip install .
 ```
+
+On Linux, this installs the `triton` dependency. On Windows, it installs the
+community `triton-windows` fork automatically. To install benchmark tooling as
+well, use `python -m pip install .[benchmark]`.
 
 The benchmark scripts require a CUDA device and can be run with:
 

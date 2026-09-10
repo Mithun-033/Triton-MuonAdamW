@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn  # noqa: PLR0402
 
-from triton_muon import TritonMuon
+from triton_muon_adamw.muon import TritonMuon
 
 parser = argparse.ArgumentParser(description="Benchmark Triton AdamW vs PyTorch AdamW")
 parser.add_argument("--fused", action="store_true", help="Use fused AdamW in PyTorch")

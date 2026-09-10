@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "triton-muon-adamw"
+version = "0.1.0"
+description = "Custom Triton-backed MuonAdamW optimizers for PyTorch"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.6",
+    "triton>=3.0; platform_system != 'Windows'",
+    "triton-windows>=3.0; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+benchmark = [
+    "numpy",
+    "rich",
+    "tqdm",
+    "torchinfo",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["triton_muon_adamw"]

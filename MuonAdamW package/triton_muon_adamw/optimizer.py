@@ -1,55 +1,107 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeAlias
 
 import torch
 import torch.nn as nn  #noqa: PLR0402
 
-from adamw.triton_adam import TritonAdamW
-from muon.triton_muon import TritonMuon
+from .adamw.triton_adam import TritonAdamW
+from .muon.triton_muon import TritonMuon
+
+
+ParameterGroups: TypeAlias = dict[str, list[nn.Parameter]]
 
 
 @dataclass
 class AdamConfig:
+    """Hyperparameters for the AdamW branch of :class:`MuonAdamW`.
+
+    Parameters
+    ----------
+    lr:
+        Learning rate used by AdamW.
+    betas:
+        Coefficients used for the first- and second-moment running averages.
+    eps:
+        Term added to the denominator for numerical stability.
+    weight_decay:
+        Decoupled AdamW weight decay coefficient.
+    """
+
     lr: float = 1e-3
-    betas: tuple = (0.9, 0.999)
+    betas: tuple[float, float] = (0.9, 0.999)
     eps: float = 1e-7
     weight_decay: float = 0.01
 
 
-@dataclass 
+@dataclass
 class MuonConfig:
-    lr : float = 1e-3
-    beta : float = 0.95
-    eps : float = 1e-7
-    weight_decay : float = 0.1
+    """Hyperparameters for the Muon branch of :class:`MuonAdamW`.
+
+    Parameters
+    ----------
+    lr:
+        Learning rate used by Muon.
+    beta:
+        Momentum coefficient used by the Muon update.
+    eps:
+        Term used to avoid division by zero during normalization.
+    weight_decay:
+        Decoupled weight decay coefficient.
+    coeffs:
+        Coefficients for the Newton-Schulz polynomial approximation.
+    nesterov:
+        Whether to use Nesterov momentum.
+    ns_steps:
+        Number of Newton-Schulz iterations used to orthogonalize updates.
+    adjust_lr_fn:
+        Learning-rate adjustment strategy for Muon matrix updates.
+    """
+
+    lr: float = 1e-3
+    beta: float = 0.95
+    eps: float = 1e-7
+    weight_decay: float = 0.1
     coeffs: tuple[float, float, float] = (3.445, -4.775, 2.0315)
-    nesterov : bool = True
-    ns_steps : int = 5
-    adjust_lr_fn : Literal["original", "match_rms_adamw", "spectral_unclamped"] = "original"
+    nesterov: bool = True
+    ns_steps: int = 5
+    adjust_lr_fn: Literal["original", "match_rms_adamw", "spectral_unclamped"] = "original"
+
 
 class MuonAdamW(TritonMuon, TritonAdamW):
-    '''
-    MuonAdamW is a custom Triton based optimizer that combines the Muon and AdamW optimizers.
-    It uses Muon for 2D parameters (exept Embeddings) and AdamW for all other parameters (like biases, LayerNorm weights, etc.).
-    The optimizers are optimized for performance on GPU, with more focus on improving training speed..
-    '''
+    """A fused optimizer that routes model parameters to Muon or AdamW.
+
+    Two-dimensional parameters are updated with Muon, except input embeddings
+    and output heads. All other trainable parameters, including biases,
+    normalization weights, and embeddings, use the Triton AdamW branch.
+
+    Parameters
+    ----------
+    model_params:
+        The model to inspect when ``parameter_split="auto"`` or a dictionary
+        with ``"adam"`` and ``"muon"`` parameter lists when using explicit
+        splitting.
+    muon_config:
+        Hyperparameters for the Muon branch.
+    adam_config:
+        Hyperparameters for the AdamW branch.
+    parameter_split:
+        ``"auto"`` classifies parameters by shape and excludes embeddings.
+        ``"explicit"`` uses the two lists supplied in ``model_params``.
+
+    Notes
+    -----
+    The optimizer expects CUDA tensors because its update kernels are written
+    in Triton. In auto mode, the model must provide
+    ``get_input_embeddings()`` and ``get_output_embeddings()`` methods.
+    """
+
     def __init__(
         self,
-        model_params: nn.Module | dict[str, nn.Parameter],
+        model_params: nn.Module | ParameterGroups,
         muon_config: MuonConfig = MuonConfig(),  # noqa: B008
         adam_config: AdamConfig = AdamConfig(),  # noqa: B008
-        parameter_split : Literal["auto", "explicit"] = "auto"
-    ):
-        '''
-        Initializes the MuonAdamW optimizer with the given model parameters and configurations for both Muon and AdamW optimizers.
-        Args:
-            model_params (nn.Module | dict[str, nn.Parameter]): The model parameters to optimize. Can be an nn.Module or a dictionary with keys 'adam' and 'muon'.
-            muon_config (MuonConfig): Configuration for the Muon optimizer.
-            adam_config (AdamConfig): Configuration for the AdamW optimizer.
-            parameter_split (Literal["auto", "explicit"]): Determines how to split parameters between Muon and AdamW optimizers. 
-                - "auto": Automatically splits parameters based on their dimensions (2D parameters go to Muon, others to AdamW).
-                - "explicit": Expects a dictionary with keys 'adam' and 'muon' containing the respective parameters.
-        '''
+        parameter_split: Literal["auto", "explicit"] = "auto",
+    ) -> None:
         adam_params = []
         muon_params = []
         if parameter_split == "explicit" and not isinstance(model_params, dict):
@@ -101,45 +153,43 @@ class MuonAdamW(TritonMuon, TritonAdamW):
             "muon": self.muon.model_params,
         }
 
-    def step(self):
-        '''
-        Performs a single optimization step for both AdamW and Muon optimizers.
-        '''
+    def step(self) -> None:
+        """Apply one update with both the AdamW and Muon branches."""
         self.adamw.step()
         self.muon.step()
 
-    def zero_grad(self):
-        '''
-        Resets the gradients of all model parameters to zero for both AdamW and Muon optimizers.
-        '''
+    def zero_grad(self) -> None:
+        """Reset gradients for parameters managed by both branches."""
         self.adamw.zero_grad()
         self.muon.zero_grad()
 
-    def state_dict(self):
-        '''
-        Returns the state of the optimizer as a dictionary.
-        '''
-        return self.param_group 
+    def state_dict(self) -> dict[str, object]:
+        """Return the serialized state for the AdamW and Muon branches."""
+        return self.param_group
 
-    def load_state_dict(self, state_dict):
-        '''
-        Loads the optimizer state from a dictionary.
-    '''
+    def load_state_dict(self, state_dict: dict[str, object]) -> None:
+        """Load branch state previously returned by :meth:`state_dict`."""
         if "adam" in state_dict:
             self.adamw.model_params = state_dict["adam"]
         if "muon" in state_dict:
             self.muon.model_params = state_dict["muon"]
 
-# pytorch wrapper to compare speed
 
 class PyTorchMuonAdamW:
+    """PyTorch reference implementation for comparing optimizer performance.
+
+    This class mirrors :class:`MuonAdamW` but delegates updates to
+    ``torch.optim.AdamW`` and ``torch.optim.Muon``. It is intended for
+    correctness and benchmark comparisons, not for the Triton fast path.
+    """
+
     def __init__(
         self,
-        model_params: nn.Module | dict[str, nn.Parameter],
+        model_params: nn.Module | ParameterGroups,
         muon_config: MuonConfig = MuonConfig(),  # noqa: B008
         adam_config: AdamConfig = AdamConfig(),  # noqa: B008
-        parameter_split: Literal["auto", "explicit"] = "auto"
-    ):
+        parameter_split: Literal["auto", "explicit"] = "auto",
+    ) -> None:
         adam_params = []
         muon_params = []
         if parameter_split == "explicit" and not isinstance(model_params, dict):
@@ -185,21 +235,25 @@ class PyTorchMuonAdamW:
             adjust_lr_fn=muon_config.adjust_lr_fn,
         )
 
-    def step(self):
+    def step(self) -> None:
+        """Apply one reference AdamW and Muon update."""
         self.adamw.step()
         self.muon.step()
 
-    def zero_grad(self):
+    def zero_grad(self) -> None:
+        """Reset gradients for both reference optimizers."""
         self.adamw.zero_grad()
         self.muon.zero_grad()
 
-    def state_dict(self):
+    def state_dict(self) -> dict[str, object]:
+        """Return the serialized state of both reference optimizers."""
         return {
             "adam": self.adamw.state_dict(),
             "muon": self.muon.state_dict(),
         }
 
-    def load_state_dict(self, state_dict):
+    def load_state_dict(self, state_dict: dict[str, object]) -> None:
+        """Load a state dictionary produced by :meth:`state_dict`."""
         if "adam" in state_dict:
             self.adamw.load_state_dict(state_dict["adam"])
         if "muon" in state_dict:
