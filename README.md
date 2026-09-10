@@ -105,6 +105,7 @@ optimizer = MuonAdamW(
 	model,
 	adam_config=adam_config,
 	muon_config=muon_config,
+	parameter_split = "auto"
 )
 ```
 
