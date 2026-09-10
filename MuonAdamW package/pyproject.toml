@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "triton-muon-adamw"
-version = "0.1.0"
+version = "1.0.0"
 description = "Custom Triton-backed MuonAdamW optimizers for PyTorch"
 readme = "README.md"
 requires-python = ">=3.10"
