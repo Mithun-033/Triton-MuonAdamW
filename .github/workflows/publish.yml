@@ -19,9 +19,9 @@ jobs:
         uses: astral-sh/setup-uv@v6
 
       - name: Build package
-        run: uv build --project "MuonAdamW package"
+        run: uv build --project "MuonAdamW package" --out-dir dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: MuonAdamW package/dist/
+          packages-dir: dist/
