@@ -11,9 +11,6 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: MuonAdamW package
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -22,7 +19,7 @@ jobs:
         uses: astral-sh/setup-uv@v6
 
       - name: Build package
-        run: uv build
+        run: uv build --project "MuonAdamW package"
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
